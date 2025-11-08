@@ -42,3 +42,16 @@ pytest
 ```
 
 Refer to `docs/architecture.md` for a deep dive into components and data flow.
+
+### Using OpenAI logprobs
+
+Set your API key and run the example with `--backend openai` to inspect token-level
+logprobs returned by models such as `gpt-4o-mini`:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+python examples/test_logtoku_integration.py --backend openai --openai-model gpt-4o-mini
+```
+
+The script prints the same LogTokU-derived uncertainty metrics and hotspot summaries as
+the Hugging Face path, making it easy to compare OpenAI responses with local Llama runs.

@@ -16,7 +16,8 @@ dependencies = [
   "numpy>=1.26",
   "scipy>=1.11",
   "pydantic>=2.6",
-  "rich>=13.7"
+  "rich>=13.7",
+  "openai>=1.30.0"
 ]
 
 [project.optional-dependencies]
