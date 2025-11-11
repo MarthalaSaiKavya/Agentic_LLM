@@ -47,9 +47,16 @@ def compute_ragas(
     if not os.getenv("OPENAI_API_KEY"):
         return {}
 
+    contexts = [c for c in contexts if c.strip()]
+    if not contexts:
+        return {}
+
     try:
-        from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+        from openai import OpenAI
         from ragas import evaluate
+        from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+        from ragas.llms import llm_factory
+        from ragas.embeddings import embedding_factory
         from datasets import Dataset
     except ImportError:
         return {}
@@ -69,7 +76,14 @@ def compute_ragas(
         metrics.extend([context_precision, context_recall])
 
     try:
-        result = evaluate(dataset, metrics=metrics)
+        client = OpenAI()
+        llm = llm_factory("gpt-4o-mini", client=client)
+        embeddings = embedding_factory("openai", model="text-embedding-3-small", client=client)
+    except Exception:
+        return {}
+
+    try:
+        result = evaluate(dataset, metrics=metrics, llm=llm, embeddings=embeddings)
     except Exception:
         return {}
     if hasattr(result, "metrics") and hasattr(result, "scores"):

@@ -2,29 +2,79 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import requests
 
 from .docstore import MemoryVectorStore
 
 
-def search_web(query: str, k: int = 3) -> List[Dict[str, str]]:
-    results: List[Dict[str, str]] = []
+logger = logging.getLogger(__name__)
+
+
+def search_web(query: str, k: int = 3) -> Tuple[List[Dict[str, str]], Optional[str]]:
+    """Attempt Tavily search first, falling back to DuckDuckGo."""
+
+    api_key = os.getenv("TAVILY_API_KEY")
+    if api_key:
+        try:
+            response = requests.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": api_key,
+                    "query": query,
+                    "max_results": k,
+                    "include_images": False,
+                    "include_answer": False,
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            results = []
+            for item in payload.get("results", [])[:k]:
+                results.append(
+                    {
+                        "title": item.get("title", ""),
+                        "body": item.get("content", ""),
+                        "href": item.get("url", ""),
+                    }
+                )
+            if results:
+                return results, None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Tavily search failed: %s", exc)
+            error = f"Tavily search failed: {exc}"
+        else:
+            error = "Tavily returned no results."
+    else:
+        error = "TAVILY_API_KEY not set; falling back to DuckDuckGo."
+
     try:
         from duckduckgo_search import DDGS
-    except ImportError:
-        return results
 
-    with DDGS() as ddgs:
-        for result in ddgs.text(query, max_results=k):
-            results.append(
-                {
-                    "title": result.get("title", ""),
-                    "body": result.get("body", ""),
-                    "href": result.get("href", ""),
-                }
-            )
-    return results
+        results: List[Dict[str, str]] = []
+        with DDGS() as ddgs:
+            for result in ddgs.text(query, max_results=k):
+                results.append(
+                    {
+                        "title": result.get("title", ""),
+                        "body": result.get("body", ""),
+                        "href": result.get("href", ""),
+                    }
+                )
+        if results:
+            return results, None
+        return [], error
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("DuckDuckGo search failed: %s", exc)
+        fallback_error = f"DuckDuckGo search failed: {exc}"
+        if error:
+            fallback_error = f"{error} | {fallback_error}"
+        return [], fallback_error
 
 
 @dataclass
@@ -41,6 +91,7 @@ class RetrievalResult:
     chunks: List[RetrievedChunk]
     web_results: List[Dict[str, str]]
     used_websearch: bool
+    web_error: Optional[str] = None
 
 
 @dataclass
@@ -62,12 +113,16 @@ class RAGPipeline:
             for chunk, score in doc_results
         ]
 
-        web_results = search_web(question, k=3) if use_web else []
+        web_results: List[Dict[str, str]] = []
+        web_error: Optional[str] = None
+        if use_web:
+            web_results, web_error = search_web(question, k=3)
         return RetrievalResult(
             question=question,
             chunks=chunks,
             web_results=web_results,
             used_websearch=use_web,
+            web_error=web_error,
         )
 
     def build_prompt(self, question: str, chunks: Sequence[RetrievedChunk], web_results: Sequence[Dict[str, str]]) -> str:
