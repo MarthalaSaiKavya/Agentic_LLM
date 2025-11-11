@@ -189,6 +189,9 @@ def display_response(entry: Dict) -> None:
             for web in entry["retrieval"].web_results:
                 st.markdown(f"- [{web.get('title','(no title)')}]({web.get('href','')})")
                 st.caption(web.get("body", "")[:300])
+        web_error = getattr(entry["retrieval"], "web_error", None)
+        if entry["retrieval"].used_websearch and web_error:
+            st.warning(web_error)
 
     with st.expander("Metrics & Confidence"):
         metrics = entry["metrics"]
