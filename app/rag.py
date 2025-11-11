@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 def search_web(query: str, k: int = 3) -> Tuple[List[Dict[str, str]], Optional[str]]:
     """Attempt Tavily search first, falling back to DuckDuckGo."""
 
+    logger.info("Executing web search for '%s' (max_results=%d)", query, k)
     api_key = os.getenv("TAVILY_API_KEY")
     if api_key:
         try:
@@ -44,6 +45,7 @@ def search_web(query: str, k: int = 3) -> Tuple[List[Dict[str, str]], Optional[s
                     }
                 )
             if results:
+                logger.info("Tavily returned %d result(s).", len(results))
                 return results, None
         except Exception as exc:  # noqa: BLE001
             logger.warning("Tavily search failed: %s", exc)
@@ -67,6 +69,7 @@ def search_web(query: str, k: int = 3) -> Tuple[List[Dict[str, str]], Optional[s
                     }
                 )
         if results:
+            logger.info("DuckDuckGo returned %d result(s).", len(results))
             return results, None
         return [], error
     except Exception as exc:  # noqa: BLE001
@@ -102,6 +105,7 @@ class RAGPipeline:
 
     def retrieve(self, question: str, *, top_k: int | None = None, use_web: bool = False) -> RetrievalResult:
         k = top_k or self.base_top_k
+        logger.info("Retrieving context for question '%s' (k=%d use_web=%s)", question[:80], k, use_web)
         doc_results = self.vector_store.similarity_search(question, k=k)
         chunks = [
             RetrievedChunk(
@@ -112,11 +116,17 @@ class RAGPipeline:
             )
             for chunk, score in doc_results
         ]
+        logger.info("Vector store returned %d chunk(s).", len(chunks))
 
         web_results: List[Dict[str, str]] = []
         web_error: Optional[str] = None
         if use_web:
             web_results, web_error = search_web(question, k=3)
+        logger.info(
+            "Retrieval complete (web_results=%d, web_error=%s).",
+            len(web_results),
+            bool(web_error),
+        )
         return RetrievalResult(
             question=question,
             chunks=chunks,
@@ -126,6 +136,9 @@ class RAGPipeline:
         )
 
     def build_prompt(self, question: str, chunks: Sequence[RetrievedChunk], web_results: Sequence[Dict[str, str]]) -> str:
+        logger.debug(
+            "Building prompt with %d doc chunk(s) and %d web result(s).", len(chunks), len(web_results)
+        )
         context_sections: List[str] = []
         for idx, chunk in enumerate(chunks, start=1):
             context_sections.append(
@@ -147,5 +160,4 @@ class RAGPipeline:
             "Answer:"
         )
         return prompt[: self.max_context_length] if len(prompt) > self.max_context_length else prompt
-
 

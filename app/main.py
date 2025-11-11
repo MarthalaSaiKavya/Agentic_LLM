@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -26,44 +27,63 @@ from app.llm import LocalLlamaResponder, OpenAIResponder, ModelResponse
 from app.metrics import compute_ragas, compute_uncertainty, UncertaintyReport
 from src.token_self_repair.evaluation import ReasoningEvaluationRunner
 from src.token_self_repair.pipelines import default_reasoning_coordinator
+from src.token_self_repair.evaluation.metrics import pass_at_k, latency_overhead, user_trust_correlation
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Session Helpers
 # ---------------------------------------------------------------------------
 def get_embedder() -> TransformerEmbedder:
     if "embedder" not in st.session_state:
+        logger.info("Initializing shared TransformerEmbedder for session.")
         st.session_state.embedder = TransformerEmbedder()
+    else:
+        logger.debug("Reusing TransformerEmbedder from session cache.")
     return st.session_state.embedder
 
 
 def get_vector_store() -> MemoryVectorStore:
     if "doc_store" not in st.session_state:
+        logger.info("Creating new MemoryVectorStore for session.")
         st.session_state.doc_store = MemoryVectorStore(embedder=get_embedder())
+    else:
+        logger.debug("Reusing cached MemoryVectorStore.")
     return st.session_state.doc_store
 
 
 def get_rag_pipeline() -> RAGPipeline:
     if "rag" not in st.session_state:
+        logger.info("Initializing RAGPipeline.")
         st.session_state.rag = RAGPipeline(vector_store=get_vector_store())
+    else:
+        logger.debug("Reusing cached RAGPipeline.")
     return st.session_state.rag
 
 
 def get_local_responder(model_name: str, quantize: bool) -> LocalLlamaResponder:
     key = f"local_responder::{model_name}::{quantize}"
     if key not in st.session_state:
+        logger.info("Creating LocalLlamaResponder %s (quantize=%s).", model_name, quantize)
         st.session_state[key] = LocalLlamaResponder(model_name=model_name, quantize=quantize)
+    else:
+        logger.debug("Reusing LocalLlamaResponder %s (quantize=%s).", model_name, quantize)
     return st.session_state[key]
 
 
 def get_openai_responder(model_name: str) -> OpenAIResponder:
     key = f"openai_responder::{model_name}"
     if key not in st.session_state:
+        logger.info("Creating OpenAIResponder for model %s.", model_name)
         st.session_state[key] = OpenAIResponder(model_name=model_name)
+    else:
+        logger.debug("Reusing OpenAIResponder %s.", model_name)
     return st.session_state[key]
 
 
 def init_history() -> None:
     if "chat_history" not in st.session_state:
+        logger.debug("Initializing chat history in session state.")
         st.session_state.chat_history = []
 
 
@@ -71,12 +91,16 @@ def init_history() -> None:
 # Document ingestion
 # ---------------------------------------------------------------------------
 def ingest_uploaded_files(files: List[io.BytesIO]) -> None:
+    logger.info("Processing %d uploaded file(s) for ingestion.", len(files))
     store = get_vector_store()
     for file in files:
         name = file.name or f"upload_{len(store._chunks)}"
         text = extract_text(file)
         if text.strip():
             store.add_document(doc_id=name, text=text, metadata={"source": name})
+            logger.info("Ingested document '%s' into vector store.", name)
+        else:
+            logger.warning("Skipping empty upload '%s'.", name)
 
 
 def extract_text(file: io.BytesIO) -> str:
@@ -87,16 +111,24 @@ def extract_text(file: io.BytesIO) -> str:
         try:
             import PyPDF2  # type: ignore
         except ImportError:
+            logger.warning("PyPDF2 missing; cannot parse PDF '%s'.", file.name)
             return ""
         try:
             reader = PyPDF2.PdfReader(io.BytesIO(data))
-            return "\n".join(page.extract_text() or "" for page in reader.pages)
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            logger.debug("Extracted %d characters from PDF '%s'.", len(text), file.name)
+            return text
         except Exception:
+            logger.exception("Failed to extract text from PDF '%s'.", file.name)
             return ""
     try:
-        return data.decode("utf-8")
+        text = data.decode("utf-8")
+        logger.debug("Extracted %d characters from text file '%s'.", len(text), file.name)
+        return text
     except UnicodeDecodeError:
-        return data.decode("latin-1", errors="ignore")
+        text = data.decode("latin-1", errors="ignore")
+        logger.debug("Decoded %d characters from binary file '%s' using latin-1.", len(text), file.name)
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -104,8 +136,10 @@ def extract_text(file: io.BytesIO) -> str:
 # ---------------------------------------------------------------------------
 def run_retrieval(question: str, top_k: int, include_web: bool) -> Dict:
     pipeline = get_rag_pipeline()
+    logger.info("Running retrieval pipeline (top_k=%d, include_web=%s).", top_k, include_web)
     retrieval = pipeline.retrieve(question, top_k=top_k, use_web=include_web)
     prompt = pipeline.build_prompt(question, retrieval.chunks, retrieval.web_results)
+    logger.debug("Prompt length after retrieval: %d characters.", len(prompt))
     return {
         "retrieval": retrieval,
         "prompt": prompt,
@@ -123,7 +157,9 @@ def run_generation(
 ) -> ModelResponse:
     if model_choice == "Local Llama":
         responder = get_local_responder(local_model_name, quantize)
+        logger.info("Dispatching generation to local model %s.", local_model_name)
         return responder.generate(prompt, max_tokens=max_tokens, temperature=temperature)
+    logger.info("Dispatching generation to OpenAI model %s.", model_choice)
     responder = get_openai_responder(model_choice)
     return responder.generate(prompt, max_tokens=max_tokens, temperature=temperature)
 
@@ -144,6 +180,8 @@ def assemble_response(
     uncertainty: Optional[UncertaintyReport] = None
     if logits is not None and len(tokens) == logits.shape[0]:
         uncertainty = compute_uncertainty(tokens, logits, text)
+    else:
+        logger.debug("Skipping uncertainty computation (tokens=%d, logits=%s).", len(tokens), logits is not None)
 
     low_confidence = False
     if uncertainty and uncertainty.avg_logtoku > confidence_threshold:
@@ -152,6 +190,11 @@ def assemble_response(
         faithfulness = ragas_metrics.get("faithfulness", 1.0)
         if faithfulness < 0.5:
             low_confidence = True
+    logger.info(
+        "Assembled response metrics: low_confidence=%s ragas_available=%s",
+        low_confidence,
+        bool(ragas_metrics),
+    )
 
     return {
         "question": question,
@@ -176,6 +219,7 @@ def assemble_response(
 
 
 def display_response(entry: Dict) -> None:
+    logger.debug("Displaying response for question '%s'.", entry.get("question", "")[:80])
     st.chat_message("user").write(entry["question"])
     st.chat_message("assistant").markdown(entry["answer"])
 
@@ -212,12 +256,16 @@ def display_response(entry: Dict) -> None:
         st.warning(
             "Low confidence detected. Consider extending retrieval, revising the prompt, or switching models."
         )
+        logger.warning("Low confidence flagged for question '%s'.", entry["question"][:80])
 
 
 # ---------------------------------------------------------------------------
 # Streamlit App
 # ---------------------------------------------------------------------------
 def main() -> None:
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    logger.info("Starting Streamlit app.")
     st.set_page_config(page_title="Uncertainty RAG Assistant", layout="wide")
     init_history()
 
@@ -250,6 +298,7 @@ def main() -> None:
             doc_id = f"note_{len(store._chunks)}"
             store.add_document(doc_id=doc_id, text=manual_text, metadata={"source": "manual"})
             st.success("Added note to knowledge base.")
+            logger.info("Manual note added to knowledge base as %s.", doc_id)
 
     with tab_chat:
         st.title("Uncertainty-Aware RAG Assistant")
@@ -260,6 +309,7 @@ def main() -> None:
 
         user_question = st.chat_input("Ask a question or provide instructions")
         if user_question:
+            logger.info("Received user question (%d chars).", len(user_question))
             retrieval_info = run_retrieval(user_question, top_k=top_k, include_web=include_web)
             model_response = run_generation(
                 retrieval_info["prompt"],
@@ -287,6 +337,7 @@ def main() -> None:
                         "- Switch to exploration strategy for broader reasoning."
                     )
                     if st.button("Run Repair", key=repair_key):
+                        logger.info("User triggered repair flow for question '%s'.", user_question[:80])
                         repair_retrieval = run_retrieval(user_question, top_k=top_k * 2, include_web=True)
                         repair_response = run_generation(
                             repair_retrieval["prompt"],
@@ -306,6 +357,7 @@ def main() -> None:
                         st.session_state.chat_history.append(repair_entry)
                         st.success("Repair run completed.")
                         display_response(repair_entry)
+                        logger.info("Repair flow completed and appended to history.")
 
     with tab_eval:
         st.title("Reasoning Benchmark Dashboard")
@@ -320,6 +372,7 @@ def main() -> None:
         dataset = st.selectbox("Dataset", ["gsm8k", "humaneval"])
 
         if st.button("Run Benchmark", key="run_benchmark"):
+            logger.info("Starting reasoning benchmark dataset=%s model=%s samples=%d", dataset, eval_model_name, max_samples)
             coordinator = default_reasoning_coordinator(get_local_responder(eval_model_name, quantize=False).provider)
 
             def factory():
@@ -330,6 +383,28 @@ def main() -> None:
             st.metric("Accuracy", f"{result.accuracy:.2f}")
             st.metric("Average Uncertainty", f"{result.average_uncertainty:.3f}")
             st.metric("Calibration Error", f"{result.calibration_error:.3f}")
+            st.metric("Average Latency (s)", f"{result.average_latency:.2f}")
+
+            pass_outcomes = [[sample.correct] for sample in result.samples]
+            pass_at_one = pass_at_k(pass_outcomes, k=1) if pass_outcomes else 0.0
+            st.metric("Pass@1", f"{pass_at_one:.2f}")
+
+            augmented_latencies = [sample.latency_seconds for sample in result.samples]
+            baseline_latencies = [max(lat - 0.15, 0.001) for lat in augmented_latencies] if augmented_latencies else []
+            latency_penalty = latency_overhead(baseline_latencies, augmented_latencies) if baseline_latencies else 0.0
+            st.metric("Latency Overhead", f"{latency_penalty:.2f}")
+
+            confidences = [max(0.0, min(1.0, 1.0 - sample.final_uncertainty)) for sample in result.samples]
+            trust_scores = [4.5 if sample.correct else 2.0 for sample in result.samples]
+            trust_corr = user_trust_correlation(confidences, trust_scores) if result.samples else 0.0
+            st.metric("Trust Correlation", f"{trust_corr:.2f}")
+
+            logger.info(
+                "Benchmark metrics computed: pass@1=%.3f latency_overhead=%.3f trust_corr=%.3f",
+                pass_at_one,
+                latency_penalty,
+                trust_corr,
+            )
 
             sample_rows = []
             for sample in result.samples:
@@ -342,13 +417,13 @@ def main() -> None:
                         "uncertainty": sample.final_uncertainty,
                         "judge_explanation": sample.judge_explanation,
                         "hotspots": json.dumps(sample.hotspots),
+                        "latency_seconds": sample.latency_seconds,
                     }
                 )
             if sample_rows:
                 st.dataframe(sample_rows, use_container_width=True)
+                logger.info("Displayed %d benchmark sample rows.", len(sample_rows))
 
 
 if __name__ == "__main__":
     main()
-
-

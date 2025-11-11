@@ -18,7 +18,8 @@ dependencies = [
   "pydantic>=2.6",
   "rich>=13.7",
   "langgraph>=0.2.0",
-  "langchain-core>=0.3.0"
+  "langchain-core>=0.3.0",
+  "langchain-openai>=0.2.0",
   "openai>=1.30.0"
 ]
 

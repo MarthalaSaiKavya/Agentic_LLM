@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+from math import comb
+from typing import Iterable, Sequence
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def auroc(scores: np.ndarray, labels: np.ndarray) -> float:
@@ -62,3 +68,88 @@ def exact_match(predictions, references) -> float:
 
 def normalize(text: str) -> str:
     return " ".join(text.strip().lower().split())
+
+
+def pass_at_k(outcomes: Sequence[Sequence[bool]], k: int = 1) -> float:
+    """
+    Compute pass@k for code-generation style evaluations.
+
+    Args:
+        outcomes: Sequence where each entry contains booleans representing whether each
+            attempt for a single task passed (True) or failed (False).
+        k: Number of samples to consider per task when estimating success probability.
+
+    Returns:
+        Average probability that at least one of the k samples solves each task.
+    """
+    if k <= 0:
+        raise ValueError("k must be positive.")
+    if not outcomes:
+        return 0.0
+
+    probabilities: list[float] = []
+    for attempts in outcomes:
+        n = len(attempts)
+        c = sum(bool(a) for a in attempts)
+        if n == 0 or c == 0:
+            probabilities.append(0.0)
+            continue
+        k_eff = min(k, n)
+        if k_eff == n:
+            probabilities.append(1.0)
+            continue
+        total = comb(n, k_eff)
+        fail = comb(n - c, k_eff) if n - c >= k_eff else 0
+        probabilities.append(1.0 - fail / total)
+    result = float(np.mean(probabilities))
+    logger.info("pass@%d computed over %d task(s): %.3f", k, len(outcomes), result)
+    return result
+
+
+def latency_overhead(baseline: Iterable[float], augmented: Iterable[float]) -> float:
+    """
+    Measure the relative latency increase introduced by the uncertainty pipeline.
+
+    Returns:
+        Fractional overhead: (mean(augmented) - mean(baseline)) / mean(baseline).
+        Negative values indicate speedups; zero means no change.
+    """
+    baseline = np.array(list(baseline), dtype=float)
+    augmented = np.array(list(augmented), dtype=float)
+    if baseline.size == 0 or augmented.size == 0:
+        return 0.0
+    base_mean = float(np.mean(baseline))
+    aug_mean = float(np.mean(augmented))
+    if base_mean == 0:
+        return float("inf") if aug_mean > 0 else 0.0
+    overhead = (aug_mean - base_mean) / base_mean
+    logger.info(
+        "Latency overhead computed (baseline_mean=%.3f, augmented_mean=%.3f): %.3f",
+        base_mean,
+        aug_mean,
+        overhead,
+    )
+    return overhead
+
+
+def user_trust_correlation(confidences: Sequence[float], trust_scores: Sequence[float]) -> float:
+    """
+    Compute Pearson correlation between model confidence and user trust ratings.
+
+    Args:
+        confidences: Model-reported confidences or 1 - uncertainty values.
+        trust_scores: User survey ratings aligned with confidences.
+
+    Returns:
+        Correlation coefficient in [-1, 1]. Returns 0 if inputs are empty or constant.
+    """
+    if len(confidences) != len(trust_scores) or not confidences:
+        return 0.0
+    x = np.array(confidences, dtype=float)
+    y = np.array(trust_scores, dtype=float)
+    if np.allclose(x, x[0]) or np.allclose(y, y[0]):
+        return 0.0
+    corr = np.corrcoef(x, y)[0, 1]
+    corr = float(np.nan_to_num(corr))
+    logger.info("User trust correlation computed for %d sample(s): %.3f", len(confidences), corr)
+    return corr

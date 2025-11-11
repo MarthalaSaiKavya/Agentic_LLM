@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
@@ -23,6 +24,7 @@ class ReasoningSampleResult:
     summary: str | None
     hotspots: List[tuple[str, str, float]]
     judge_explanation: str
+    latency_seconds: float
 
 
 @dataclass(slots=True)
@@ -31,6 +33,7 @@ class ReasoningBenchmarkResult:
     accuracy: float
     calibration_error: float
     average_uncertainty: float
+    average_latency: float
     samples: List[ReasoningSampleResult]
 
 
@@ -48,12 +51,16 @@ class ReasoningEvaluationRunner:
 
         sample_results: List[ReasoningSampleResult] = []
         uncertainties: List[float] = []
+        latencies: List[float] = []
 
         for idx, sample in enumerate(benchmark.samples):
             if max_samples is not None and idx >= max_samples:
                 break
             coordinator = self._factory()
+            start = time.perf_counter()
             reasoning_result: ReasoningResult = coordinator.solve(sample.prompt)
+            latency = time.perf_counter() - start
+            latencies.append(latency)
 
             tokens = reasoning_result.pipeline_result.step.generated_tokens
             prediction = "".join(tokens).strip()
@@ -96,6 +103,7 @@ class ReasoningEvaluationRunner:
                     summary=reasoning_result.summary,
                     hotspots=hotspots,
                     judge_explanation=judge_explanation,
+                    latency_seconds=latency,
                 )
             )
 
@@ -105,17 +113,19 @@ class ReasoningEvaluationRunner:
             accuracy = float(labels.mean())
             calibration_error = expected_calibration_error(confidences, labels)
             avg_uncertainty = float(np.mean(uncertainties))
+            avg_latency = float(np.mean(latencies)) if latencies else 0.0
         else:
             accuracy = 0.0
             calibration_error = 0.0
             avg_uncertainty = 1.0
+            avg_latency = 0.0
 
         return ReasoningBenchmarkResult(
             benchmark=benchmark.name,
             accuracy=float(accuracy),
             calibration_error=float(calibration_error),
             average_uncertainty=avg_uncertainty,
+            average_latency=avg_latency,
             samples=sample_results,
         )
-
 
