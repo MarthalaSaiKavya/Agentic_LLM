@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -28,8 +29,8 @@ from app.docstore import MemoryVectorStore
 from app.rag import RAGPipeline, RetrievedChunk
 from app.llm import LocalLlamaResponder, OpenAIResponder, ModelResponse
 from app.metrics import compute_ragas, compute_uncertainty, UncertaintyReport
-from src.token_self_repair.evaluation import ReasoningEvaluationRunner
-from src.token_self_repair.pipelines import default_reasoning_coordinator
+from src.token_self_repair.evaluation import ReasoningEvaluationRunner, ProgramRepairEvaluationRunner
+from src.token_self_repair.pipelines import default_reasoning_coordinator, default_program_repair_coordinator
 from src.token_self_repair.evaluation.metrics import (
     pass_at_k,
     latency_overhead,
@@ -49,6 +50,68 @@ TRUST_FEEDBACK_FILE = LOG_DIR / "user_trust_feedback.jsonl"
 
 def ensure_log_dir() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def render_hotspot_timeline(u_map: Optional["UncertaintyMap"]) -> None:
+    if not u_map or not u_map.line_scores:
+        st.info("No hotspot data available for this answer.")
+        return
+    rows = []
+    for line_no, info in sorted(u_map.line_scores.items()):
+        rows.append(
+            {
+                "line": line_no,
+                "uncertainty": info.total,
+                "aleatoric": info.aleatoric,
+                "epistemic": info.epistemic,
+                "text": info.text,
+            }
+        )
+    df = pd.DataFrame(rows)
+    chart = (
+        alt.Chart(df)
+        .mark_line(point=True)
+        .encode(x="line:Q", y="uncertainty:Q", tooltip=["line", "uncertainty", "text"])
+        .properties(height=200)
+    )
+    st.altair_chart(chart, theme="streamlit")
+    st.dataframe(df[["line", "uncertainty", "text"]].head(15), width="stretch")
+
+
+def render_token_map(u_map: Optional["UncertaintyMap"]) -> None:
+    if not u_map or u_map.scores is None:
+        st.info("Token map unavailable for this response.")
+        return
+    tokens = u_map.tokens or []
+    totals = u_map.scores.total.tolist()
+    aleatoric = u_map.scores.au.tolist()
+    epistemic = u_map.scores.eu.tolist()
+    rows = []
+    for idx, token in enumerate(tokens):
+        token_clean = token.replace("\n", "\\n") or "[token]"
+        rows.append(
+            {
+                "index": idx,
+                "token": token_clean,
+                "total": totals[idx],
+                "aleatoric": aleatoric[idx],
+                "epistemic": epistemic[idx],
+            }
+        )
+    df = pd.DataFrame(rows)
+    df_sorted = df.sort_values("total", ascending=False).head(25)
+    st.dataframe(df_sorted, width="stretch")
+
+
+def render_message_history() -> None:
+    history = st.session_state.get("chat_history", [])
+    if not history:
+        st.info("No conversation history yet.")
+        return
+    for idx, entry in enumerate(history[-10:], start=max(len(history) - 9, 1)):
+        st.markdown(f"**Turn {idx} – User:** {entry.get('question','')}")
+        st.markdown(f"**Assistant:** {entry.get('answer','')}")
+        st.markdown("---")
 
 
 def _read_json_file(path: Path) -> Dict[str, float]:
@@ -345,6 +408,12 @@ def display_response(entry: Dict) -> None:
         )
         logger.warning("Low confidence flagged for question '%s'.", entry["question"][:80])
 
+    u_map = entry.get("uncertainty_map")
+    with st.expander("Hotspot Timeline", expanded=False):
+        render_hotspot_timeline(u_map)
+    with st.expander("Token Map", expanded=False):
+        render_token_map(u_map)
+
 
 # ---------------------------------------------------------------------------
 # Streamlit App
@@ -356,7 +425,7 @@ def main() -> None:
     st.set_page_config(page_title="Uncertainty RAG Assistant", layout="wide")
     init_history()
 
-    tab_chat, tab_eval = st.tabs(["Assistant", "Benchmarks"])
+    tab_chat, tab_eval, tab_repair = st.tabs(["Assistant", "Reasoning Benchmarks", "Program Repair"])
 
     with st.sidebar:
         st.header("Configuration")
@@ -393,6 +462,9 @@ def main() -> None:
 
         for entry in st.session_state.chat_history:
             display_response(entry)
+
+        with st.expander("Message History Pane", expanded=False):
+            render_message_history()
 
         user_question = st.chat_input("Ask a question or provide instructions")
         if user_question:
@@ -562,6 +634,54 @@ def main() -> None:
                 st.dataframe(sample_rows, width="stretch")
                 logger.info("Displayed %d benchmark sample rows.", len(sample_rows))
 
+    with tab_repair:
+        st.title("Program Repair Benchmarks")
+        st.caption("Evaluate code repair strategies on curated bug datasets.")
+        repair_model_name = st.selectbox(
+            "Repair Model (local Llama only)",
+            ["meta-llama/Llama-3.2-3B-Instruct", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"],
+            index=1,
+        )
+        repair_samples = st.slider("Number of samples", 1, 10, 3)
+        repair_dataset = st.selectbox("Repair Dataset", ["repair", "defects4j", "gitbugs"])
+
+        if st.button("Run Program Repair Benchmark", key="run_program_repair"):
+            logger.info(
+                "Starting program repair benchmark dataset=%s model=%s samples=%d",
+                repair_dataset,
+                repair_model_name,
+                repair_samples,
+            )
+
+            responder = get_local_responder(repair_model_name, quantize=False)
+
+            def repair_factory():
+                return default_program_repair_coordinator(responder.provider)
+
+            repair_runner = ProgramRepairEvaluationRunner(coordinator_factory=repair_factory)
+            repair_result = repair_runner.run(repair_dataset, max_samples=repair_samples)
+            st.metric("Pass Rate", f"{repair_result.pass_rate:.2f}")
+            st.metric("Pass@1", f"{repair_result.pass_at_one:.2f}")
+            st.metric("Average Latency (s)", f"{repair_result.average_latency:.2f}")
+
+            sample_rows = []
+            for sample in repair_result.samples:
+                sample_rows.append(
+                    {
+                        "prompt": sample.prompt,
+                        "buggy_code": sample.buggy_code,
+                        "failing_tests": "\n".join(sample.failing_tests),
+                        "patch": sample.patch,
+                        "reference_patch": sample.reference_patch,
+                        "success": sample.success,
+                        "latency_seconds": sample.latency_seconds,
+                    }
+                )
+            if sample_rows:
+                st.dataframe(sample_rows, width="stretch")
+            st.info(
+                "Repair logs are available in the terminal output for detailed troubleshooting of each attempt."
+            )
 
 if __name__ == "__main__":
     main()

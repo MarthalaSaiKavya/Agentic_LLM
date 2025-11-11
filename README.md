@@ -37,11 +37,32 @@ The `docs/` directory explains architectural decisions and evaluation protocols,
 
 ## Quick Start
 ```bash
-pip install -e .
+# install the Streamlit UI + OpenAI + local Llama extras
+pip install -e ".[ui,openai,llama]"
 pytest
 ```
 
+Optional extras:
+
+- `pip install -e ".[ui]"` – Streamlit dashboard + visualization stack (pandas/altair)
+- `pip install -e ".[openai]"` – OpenAI + langchain-openai + ddgs search fallback
+- `pip install -e ".[llama]"` – torch/transformers/sentence-transformers for local models
+
 Refer to `docs/architecture.md` for a deep dive into components and data flow.
+
+### Visualization add-ons
+
+The Streamlit chat view now exposes:
+
+- **Hotspot timeline** – line-by-line uncertainty plot derived from LogTokU aggregates
+- **Token map** – sortable table of tokens with epistemic/aleatoric breakdowns
+- **Message history pane** – quickly skim recent prompts/answers without scrolling the chat feed
+
+Each panel logs to the console so you can trace uncertainty spikes back to the underlying tokens/lines.
+
+### Program repair benchmarks
+
+The new _Program Repair_ tab runs the multi-level repair coordinator (line/method/test strategies) on mini versions of the Repair, Defects4J, and GitBugs datasets. Metrics include pass rate, pass@1, and latency, and every attempt logs its selected strategy plus messenger history for fast debugging.
 
 ### Using OpenAI logprobs
 

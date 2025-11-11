@@ -163,6 +163,9 @@ Follow the phases in order:
 ## Quick Commands
 
 ```bash
+# Install core + UI/Llama/OpenAI extras
+pip install -e ".[ui,openai,llama]"
+
 # Activate environment
 cd /home/dpendya/Documents/dlba
 source venv/bin/activate  # or: conda activate logtoku
@@ -180,8 +183,8 @@ python -m token_self_repair.evaluation.runner --all
 # Generate visualizations
 python -m token_self_repair.visualization.heatmap --input results.json
 
-# Start interactive explainer
-streamlit run src/token_self_repair/visualization/explainer_ui.py
+# Launch the Streamlit dashboard (chat + benchmarks + program repair tabs)
+streamlit run app/main.py
 ```
 
 ## Next Steps

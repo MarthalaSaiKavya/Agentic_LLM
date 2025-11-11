@@ -7,6 +7,7 @@ from .repair_agent import RepairAgentCoordinator
 from .token_self_repair_graph import TokenSelfRepairGraph
 from .graph_adapter import GraphPipelineAdapter, create_graph_pipeline
 from .reasoning import ReasoningCoordinator, ReasoningResult, default_reasoning_coordinator
+from .program_repair import ProgramRepairCoordinator, ProgramRepairResult, default_program_repair_coordinator
 
 __all__ = [
     "UncertaintyAwarePipeline",
@@ -21,4 +22,7 @@ __all__ = [
     "ReasoningCoordinator",
     "ReasoningResult",
     "default_reasoning_coordinator",
+    "ProgramRepairCoordinator",
+    "ProgramRepairResult",
+    "default_program_repair_coordinator",
 ]

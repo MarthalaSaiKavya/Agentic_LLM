@@ -8,6 +8,11 @@ from .reasoning_runner import (
 )
 from .datasets import dataset_registry
 from .judge import judge_answer, JudgeResult
+from .repair_runner import (
+    ProgramRepairEvaluationRunner,
+    RepairBenchmarkResult,
+    RepairSampleResult,
+)
 
 __all__ = [
     "EvaluationRunner",
@@ -15,6 +20,9 @@ __all__ = [
     "ReasoningEvaluationRunner",
     "ReasoningBenchmarkResult",
     "ReasoningSampleResult",
+    "ProgramRepairEvaluationRunner",
+    "RepairBenchmarkResult",
+    "RepairSampleResult",
     "JudgeResult",
     "judge_answer",
     "dataset_registry",

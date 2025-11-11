@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List
+from typing import Callable, Dict, Iterable, List, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,9 @@ class TaskSample:
 
     prompt: str
     reference: str
+    buggy_code: Optional[str] = None
+    failing_tests: Optional[List[str]] = None
+    description: Optional[str] = None
 
 
 @dataclass(slots=True)
@@ -90,6 +93,14 @@ def repair_samples() -> List[TaskSample]:
                 "        total *= n\n"
                 "    return total"
             ),
+            buggy_code=(
+                "def multiply(nums):\n"
+                "    total = 0\n"
+                "    for n in nums:\n"
+                "        total += n\n"
+                "    return total"
+            ),
+            failing_tests=["multiply([2,3,4]) should return 24"],
         )
     ]
 
@@ -103,6 +114,38 @@ def dataset_registry() -> Dict[str, Benchmark]:
         "truthfulqa": Benchmark(name="TruthfulQA-mini", samples=truthfulqa_samples(), metric=exact_match),
         "bioasq": Benchmark(name="BioASQ-mini", samples=bioasq_samples(), metric=exact_match),
         "repair": Benchmark(name="Repair-mini", samples=repair_samples(), metric=exact_match),
+        "defects4j": Benchmark(name="Defects4J-mini", samples=defects4j_samples(), metric=exact_match),
+        "gitbugs": Benchmark(name="GitBugs-mini", samples=gitbugs_samples(), metric=exact_match),
     }
     logger.info("Dataset registry initialized with benchmarks: %s", ", ".join(registry))
     return registry
+def defects4j_samples() -> List[TaskSample]:
+    return [
+        TaskSample(
+            prompt="Repair the following Java snippet so that division by zero is avoided.",
+            reference="return numerator / denominator;",
+            buggy_code=(
+                "int divide(int numerator, int denominator) {\n"
+                "    return numerator / denominator;\n"
+                "}\n"
+            ),
+            failing_tests=["divide(5, 0) should throw IllegalArgumentException"],
+            description="Add guard for denominator == 0 to match Defects4J Math bug pattern.",
+        )
+    ]
+
+
+def gitbugs_samples() -> List[TaskSample]:
+    return [
+        TaskSample(
+            prompt="Fix NullPointerException in this Java snippet extracted from GitBugs.",
+            reference="if (listener != null) { listener.onComplete(); }",
+            buggy_code=(
+                "void complete(Listener listener) {\n"
+                "    listener.onComplete();\n"
+                "}\n"
+            ),
+            failing_tests=["complete(null) should not throw"],
+            description="Add null guard before invoking listener.",
+        )
+    ]
