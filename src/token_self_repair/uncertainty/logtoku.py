@@ -8,10 +8,20 @@ Reference implementation from: logtoku/SenU/metrics.py
 """
 
 import numpy as np
-import torch
-from typing import Optional, Dict, List, Iterable, Sequence
+from typing import Optional, Dict, List, Iterable, Sequence, TYPE_CHECKING
 from scipy.special import softmax, digamma
 from dataclasses import dataclass
+
+# Optional torch import - only needed for analyze() method
+if TYPE_CHECKING:
+    import torch
+else:
+    try:
+        import torch
+        _HAS_TORCH = True
+    except ImportError:
+        _HAS_TORCH = False
+        torch = None
 
 from .base import UncertaintyEstimator
 from ..types import TokenScore, UncertaintyLevel
@@ -227,7 +237,7 @@ class LogTokUEstimator(UncertaintyEstimator):
     
     def analyze(
         self,
-        logits: torch.Tensor,
+        logits,
         token_texts: Optional[List[str]] = None
     ) -> Optional[UncertaintyScores]:
         """
@@ -236,7 +246,7 @@ class LogTokUEstimator(UncertaintyEstimator):
         This is the main entry point for uncertainty estimation.
         
         Args:
-            logits: Logits tensor of shape (num_tokens, vocab_size)
+            logits: Logits tensor of shape (num_tokens, vocab_size) (torch.Tensor or numpy array)
             token_texts: Optional list of token strings for reference
         
         Returns:
@@ -259,7 +269,7 @@ class LogTokUEstimator(UncertaintyEstimator):
             >>> print(f"Most uncertain token indices: {top_5}")
         """
         # Convert to numpy if needed
-        if isinstance(logits, torch.Tensor):
+        if _HAS_TORCH and torch is not None and isinstance(logits, torch.Tensor):
             logits = logits.cpu().numpy()
         
         # Ensure 2D
@@ -379,7 +389,7 @@ class LogTokUEstimator(UncertaintyEstimator):
 
 # Convenience functions for quick testing
 
-def quick_analyze(logits: torch.Tensor, k: int = 2) -> UncertaintyScores:
+def quick_analyze(logits, k: int = 2) -> UncertaintyScores:
     """
     Quick analysis with default settings.
     

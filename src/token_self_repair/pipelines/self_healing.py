@@ -36,6 +36,7 @@ class SelfHealingCoordinator:
     strategies: list[SelfRepairStrategy]
     messenger: StatusMessenger = field(default_factory=StatusMessenger)
     config: ProjectConfig = field(default_factory=ProjectConfig)
+    pipeline: UncertaintyAwarePipeline = field(init=False)
 
     def __post_init__(self) -> None:
         self.pipeline = UncertaintyAwarePipeline(
