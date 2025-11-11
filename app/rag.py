@@ -56,7 +56,12 @@ def search_web(query: str, k: int = 3) -> Tuple[List[Dict[str, str]], Optional[s
         error = "TAVILY_API_KEY not set; falling back to DuckDuckGo."
 
     try:
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS  # type: ignore
+            logger.debug("Using ddgs package for DuckDuckGo search.")
+        except ImportError:
+            from duckduckgo_search import DDGS  # type: ignore
+            logger.debug("Using legacy duckduckgo_search package for web search.")
 
         results: List[Dict[str, str]] = []
         with DDGS() as ddgs:
@@ -160,4 +165,3 @@ class RAGPipeline:
             "Answer:"
         )
         return prompt[: self.max_context_length] if len(prompt) > self.max_context_length else prompt
-

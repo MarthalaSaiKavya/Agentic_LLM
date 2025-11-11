@@ -5,11 +5,14 @@ from __future__ import annotations
 import io
 import json
 import logging
+import warnings
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -27,9 +30,93 @@ from app.llm import LocalLlamaResponder, OpenAIResponder, ModelResponse
 from app.metrics import compute_ragas, compute_uncertainty, UncertaintyReport
 from src.token_self_repair.evaluation import ReasoningEvaluationRunner
 from src.token_self_repair.pipelines import default_reasoning_coordinator
-from src.token_self_repair.evaluation.metrics import pass_at_k, latency_overhead, user_trust_correlation
+from src.token_self_repair.evaluation.metrics import (
+    pass_at_k,
+    latency_overhead,
+    user_trust_correlation,
+)
 
 logger = logging.getLogger(__name__)
+warnings.filterwarnings(
+    "ignore",
+    message="Importing from 'instructor.client' is deprecated",
+)
+
+LOG_DIR = PROJECT_ROOT / "logs"
+LATENCY_BASELINE_FILE = LOG_DIR / "latency_baselines.json"
+TRUST_FEEDBACK_FILE = LOG_DIR / "user_trust_feedback.jsonl"
+
+
+def ensure_log_dir() -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _read_json_file(path: Path) -> Dict[str, float]:
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to read %s: %s", path, exc)
+        return {}
+
+
+def _write_json_file(path: Path, payload: Dict[str, float]) -> None:
+    ensure_log_dir()
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+
+def register_latency_baseline(benchmark: str, measured: float) -> float:
+    baselines = _read_json_file(LATENCY_BASELINE_FILE)
+    baseline = baselines.get(benchmark)
+    if baseline is None:
+        baseline = measured
+        baselines[benchmark] = baseline
+        logger.info("Recording initial latency baseline for %s: %.3fs", benchmark, baseline)
+    else:
+        updated = 0.9 * baseline + 0.1 * measured
+        baselines[benchmark] = updated
+        logger.info(
+            "Updating latency baseline for %s: old=%.3f new_measure=%.3f updated=%.3f",
+            benchmark,
+            baseline,
+            measured,
+            updated,
+        )
+    _write_json_file(LATENCY_BASELINE_FILE, baselines)
+    return float(baseline)
+
+
+def load_trust_feedback(benchmark: Optional[str] = None) -> List[Dict[str, float]]:
+    ensure_log_dir()
+    entries: List[Dict[str, float]] = []
+    if not TRUST_FEEDBACK_FILE.exists():
+        return entries
+    with TRUST_FEEDBACK_FILE.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                if benchmark and entry.get("benchmark") != benchmark:
+                    continue
+                entries.append(entry)
+            except json.JSONDecodeError:
+                continue
+    return entries
+
+
+def append_trust_feedback(entries: List[Dict[str, float]]) -> None:
+    if not entries:
+        return
+    ensure_log_dir()
+    with TRUST_FEEDBACK_FILE.open("a", encoding="utf-8") as handle:
+        for entry in entries:
+            handle.write(json.dumps(entry) + "\n")
+    logger.info("Appended %d trust feedback entr(y/ies).", len(entries))
 
 # ---------------------------------------------------------------------------
 # Session Helpers
@@ -369,7 +456,8 @@ def main() -> None:
             index=0,
         )
         max_samples = st.slider("Number of samples", 1, 20, 5)
-        dataset = st.selectbox("Dataset", ["gsm8k", "humaneval"])
+        dataset_options = ["gsm8k", "humaneval", "truthfulqa", "bioasq", "repair"]
+        dataset = st.selectbox("Dataset", dataset_options)
 
         if st.button("Run Benchmark", key="run_benchmark"):
             logger.info("Starting reasoning benchmark dataset=%s model=%s samples=%d", dataset, eval_model_name, max_samples)
@@ -381,6 +469,7 @@ def main() -> None:
             runner = ReasoningEvaluationRunner(coordinator_factory=factory)
             result = runner.run(dataset, max_samples=max_samples)
             st.metric("Accuracy", f"{result.accuracy:.2f}")
+            st.metric("AUROC", f"{result.auroc:.2f}")
             st.metric("Average Uncertainty", f"{result.average_uncertainty:.3f}")
             st.metric("Calibration Error", f"{result.calibration_error:.3f}")
             st.metric("Average Latency (s)", f"{result.average_latency:.2f}")
@@ -390,21 +479,69 @@ def main() -> None:
             st.metric("Pass@1", f"{pass_at_one:.2f}")
 
             augmented_latencies = [sample.latency_seconds for sample in result.samples]
-            baseline_latencies = [max(lat - 0.15, 0.001) for lat in augmented_latencies] if augmented_latencies else []
-            latency_penalty = latency_overhead(baseline_latencies, augmented_latencies) if baseline_latencies else 0.0
+            baseline_value = register_latency_baseline(result.benchmark, result.average_latency)
+            latency_penalty = (
+                latency_overhead([baseline_value], [result.average_latency]) if result.average_latency else 0.0
+            )
             st.metric("Latency Overhead", f"{latency_penalty:.2f}")
 
-            confidences = [max(0.0, min(1.0, 1.0 - sample.final_uncertainty)) for sample in result.samples]
-            trust_scores = [4.5 if sample.correct else 2.0 for sample in result.samples]
-            trust_corr = user_trust_correlation(confidences, trust_scores) if result.samples else 0.0
+            confidences = [sample.confidence for sample in result.samples]
+            recorded_feedback = load_trust_feedback(result.benchmark)
+            if recorded_feedback:
+                trust_confidences = [entry["confidence"] for entry in recorded_feedback]
+                trust_scores = [entry["trust"] for entry in recorded_feedback]
+            else:
+                trust_confidences = confidences
+                trust_scores = [4.5 if sample.correct else 2.0 for sample in result.samples]
+            trust_corr = (
+                user_trust_correlation(trust_confidences, trust_scores) if trust_confidences else 0.0
+            )
             st.metric("Trust Correlation", f"{trust_corr:.2f}")
 
             logger.info(
-                "Benchmark metrics computed: pass@1=%.3f latency_overhead=%.3f trust_corr=%.3f",
+                "Benchmark metrics computed: pass@1=%.3f latency_overhead=%.3f trust_corr=%.3f baseline=%.3f",
                 pass_at_one,
                 latency_penalty,
                 trust_corr,
+                baseline_value,
             )
+
+            if result.calibration_bins:
+                bin_conf, bin_acc = zip(*result.calibration_bins)
+                calibration_df = pd.DataFrame(
+                    {"Confidence": bin_conf, "Empirical Accuracy": bin_acc}
+                )
+                st.line_chart(calibration_df.set_index("Confidence"))
+
+            with st.expander("Record User Trust Feedback"):
+                if not result.samples:
+                    st.info("Run a benchmark to enable feedback.")
+                else:
+                    sample_options = {
+                        f"Sample {idx + 1}: {sample.prompt[:60]}": sample
+                        for idx, sample in enumerate(result.samples)
+                    }
+                    selected_label = st.selectbox("Select sample", list(sample_options.keys()))
+                    trust_rating = st.slider("Trust rating (1=low, 5=high)", 1.0, 5.0, 4.0, 0.5)
+                    note = st.text_input("Optional note")
+                    if st.button("Submit Trust Feedback", key="trust_submit"):
+                        chosen = sample_options[selected_label]
+                        entry = {
+                            "benchmark": result.benchmark,
+                            "prompt": chosen.prompt,
+                            "confidence": chosen.confidence,
+                            "trust": trust_rating,
+                            "note": note,
+                            "timestamp": time.time(),
+                        }
+                        append_trust_feedback([entry])
+                        st.success("Trust feedback recorded.")
+                        logger.info(
+                            "Recorded trust feedback for %s (confidence=%.3f trust=%.2f).",
+                            result.benchmark,
+                            chosen.confidence,
+                            trust_rating,
+                        )
 
             sample_rows = []
             for sample in result.samples:
@@ -415,13 +552,14 @@ def main() -> None:
                         "reference": sample.reference,
                         "correct": sample.correct,
                         "uncertainty": sample.final_uncertainty,
+                        "confidence": sample.confidence,
                         "judge_explanation": sample.judge_explanation,
                         "hotspots": json.dumps(sample.hotspots),
                         "latency_seconds": sample.latency_seconds,
                     }
                 )
             if sample_rows:
-                st.dataframe(sample_rows, use_container_width=True)
+                st.dataframe(sample_rows, width="stretch")
                 logger.info("Displayed %d benchmark sample rows.", len(sample_rows))
 
 

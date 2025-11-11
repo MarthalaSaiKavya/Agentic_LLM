@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from math import comb
-from typing import Iterable, Sequence
+from typing import Iterable, Sequence, Tuple
 
 import numpy as np
 
@@ -153,3 +153,30 @@ def user_trust_correlation(confidences: Sequence[float], trust_scores: Sequence[
     corr = float(np.nan_to_num(corr))
     logger.info("User trust correlation computed for %d sample(s): %.3f", len(confidences), corr)
     return corr
+
+
+def calibration_curve(probabilities: Sequence[float], labels: Sequence[float], bins: int = 10) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build a calibration curve from probability/label pairs.
+
+    Returns:
+        Tuple of (bin_confidences, bin_accuracies) each shaped (bins,).
+    """
+    probs = np.asarray(probabilities, dtype=float)
+    lbls = np.asarray(labels, dtype=float)
+    if probs.size == 0 or lbls.size == 0 or probs.size != lbls.size:
+        return np.zeros(bins), np.zeros(bins)
+    probs = np.clip(probs, 0.0, 1.0)
+    bin_edges = np.linspace(0.0, 1.0, bins + 1)
+    bin_conf = np.zeros(bins)
+    bin_acc = np.zeros(bins)
+    for idx in range(bins):
+        mask = (probs >= bin_edges[idx]) & (probs < bin_edges[idx + 1] if idx < bins - 1 else probs <= bin_edges[idx + 1])
+        if not np.any(mask):
+            continue
+        bin_conf[idx] = float(np.mean(probs[mask]))
+        bin_acc[idx] = float(np.mean(lbls[mask]))
+    logger.info(
+        "Calibration curve computed for %d sample(s) into %d bins.", len(probabilities), bins
+    )
+    return bin_conf, bin_acc
