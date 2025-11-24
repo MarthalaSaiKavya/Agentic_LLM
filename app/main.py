@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import io
 import json
 import logging
@@ -36,6 +37,7 @@ from src.token_self_repair.evaluation.metrics import (
     latency_overhead,
     user_trust_correlation,
 )
+from src.token_self_repair.uncertainty import UncertaintyMap
 
 logger = logging.getLogger(__name__)
 warnings.filterwarnings(
@@ -50,6 +52,37 @@ TRUST_FEEDBACK_FILE = LOG_DIR / "user_trust_feedback.jsonl"
 
 def ensure_log_dir() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _token_uncertainty_html(
+    u_map: Optional[UncertaintyMap], threshold: Optional[float]
+) -> Optional[str]:
+    if not u_map or not u_map.tokens or not u_map.scores or len(u_map.tokens) != len(u_map.scores.total):
+        return None
+    totals = np.asarray(u_map.scores.total, dtype=np.float32)
+    if totals.size == 0:
+        return None
+    if threshold is not None and threshold > 0:
+        scale = float(threshold)
+    else:
+        max_total = float(np.max(totals))
+        scale = max_total if max_total > 0 else 1.0
+    spans = []
+    for token, score in zip(u_map.tokens, totals):
+        ratio = float(np.clip(score / scale, 0.0, 1.0))
+        # Interpolate between green (#22c55e) and red (#dc2626)
+        start = (0x22, 0xC5, 0x5E)
+        end = (0xDC, 0x26, 0x26)
+        r = int(start[0] + (end[0] - start[0]) * ratio)
+        g = int(start[1] + (end[1] - start[1]) * ratio)
+        b = int(start[2] + (end[2] - start[2]) * ratio)
+        color = f"#{r:02x}{g:02x}{b:02x}"
+        safe_token = html.escape(token)
+        spans.append(
+            f'<span style="background-color:{color}; padding:0 2px; border-radius:3px;">{safe_token}</span>'
+        )
+    joined = "".join(spans)
+    return f'<div style="white-space: pre-wrap; line-height:1.5; font-family: inherit;">{joined}</div>'
 
 
 def render_hotspot_timeline(u_map: Optional["UncertaintyMap"]) -> None:
@@ -71,7 +104,11 @@ def render_hotspot_timeline(u_map: Optional["UncertaintyMap"]) -> None:
     chart = (
         alt.Chart(df)
         .mark_line(point=True)
-        .encode(x="line:Q", y="uncertainty:Q", tooltip=["line", "uncertainty", "text"])
+        .encode(
+            x=alt.X("line:Q", axis=alt.Axis(format="d", tickMinStep=1)),
+            y="uncertainty:Q",
+            tooltip=["line", "uncertainty", "text"],
+        )
         .properties(height=200)
     )
     st.altair_chart(chart, theme="streamlit")
@@ -350,6 +387,7 @@ def assemble_response(
         "question": question,
         "answer": text,
         "model": model_response.metadata.get("model"),
+        "uncertainty_threshold": confidence_threshold,
         "metrics": {
             "ragas": ragas_metrics,
             "uncertainty": {
@@ -371,7 +409,31 @@ def assemble_response(
 def display_response(entry: Dict) -> None:
     logger.debug("Displaying response for question '%s'.", entry.get("question", "")[:80])
     st.chat_message("user").write(entry["question"])
-    st.chat_message("assistant").markdown(entry["answer"])
+    u_map = entry.get("uncertainty_map")
+    colored_answer = _token_uncertainty_html(u_map, entry.get("uncertainty_threshold"))
+    if colored_answer:
+        st.chat_message("assistant").markdown(colored_answer, unsafe_allow_html=True)
+    else:
+        st.chat_message("assistant").markdown(entry["answer"])
+    metrics = entry["metrics"]
+    uncertainty_metrics = metrics.get("uncertainty")
+    avg_logtoku = None
+    if uncertainty_metrics and uncertainty_metrics.get("avg_logtoku") is not None:
+        avg_logtoku = uncertainty_metrics["avg_logtoku"]
+    threshold = entry.get("uncertainty_threshold")
+    if avg_logtoku is not None and threshold is not None:
+        detail = f"Avg LogTokU {avg_logtoku:.2f} vs threshold {threshold:.2f}"
+    elif avg_logtoku is not None:
+        detail = f"Avg LogTokU {avg_logtoku:.2f}"
+    elif entry["low_confidence"]:
+        detail = "Flagged by downstream metrics"
+    else:
+        detail = "No uncertainty metrics available"
+    status_text = f"Uncertainty status: {'HIGH' if entry['low_confidence'] else 'LOW'} — {detail}"
+    if entry["low_confidence"]:
+        st.warning(status_text)
+    else:
+        st.success(status_text)
 
     with st.expander("Retrieval Context"):
         st.write("**Top Documents:**")
@@ -388,7 +450,6 @@ def display_response(entry: Dict) -> None:
             st.warning(web_error)
 
     with st.expander("Metrics & Confidence"):
-        metrics = entry["metrics"]
         if metrics["uncertainty"]:
             cols = st.columns(4)
             cols[0].metric("Avg EU", f"{metrics['uncertainty']['avg_eu']:.3f}")
@@ -408,7 +469,6 @@ def display_response(entry: Dict) -> None:
         )
         logger.warning("Low confidence flagged for question '%s'.", entry["question"][:80])
 
-    u_map = entry.get("uncertainty_map")
     with st.expander("Hotspot Timeline", expanded=False):
         render_hotspot_timeline(u_map)
     with st.expander("Token Map", expanded=False):
