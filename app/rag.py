@@ -121,7 +121,21 @@ class RAGPipeline:
             )
             for chunk, score in doc_results
         ]
-        logger.info("Vector store returned %d chunk(s).", len(chunks))
+        deduped_chunks: List[RetrievedChunk] = []
+        seen_signatures: set[tuple[str, str]] = set()
+        for chunk in chunks:
+            signature = (chunk.source, chunk.text.strip())
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            deduped_chunks.append(chunk)
+        if len(deduped_chunks) != len(chunks):
+            logger.info(
+                "Removed %d duplicate chunk(s) from retrieval context.",
+                len(chunks) - len(deduped_chunks),
+            )
+        chunks = deduped_chunks
+        logger.info("Vector store returned %d unique chunk(s).", len(chunks))
 
         web_results: List[Dict[str, str]] = []
         web_error: Optional[str] = None
