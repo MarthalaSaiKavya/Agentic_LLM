@@ -492,7 +492,11 @@ def main() -> None:
         model_mode = st.radio("Assistant Model", ["Local Llama", "gpt-4o-mini"], index=0)
         local_model_name = st.selectbox(
             "Local Model",
-            ["meta-llama/Llama-3.2-3B-Instruct", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"],
+            [
+                "meta-llama/Llama-3.1-8B-Instruct",
+                "meta-llama/Llama-3.2-3B-Instruct",
+                "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+            ],
             index=0,
         )
         quantize = st.checkbox("Use 4-bit quantization", value=False)
@@ -584,7 +588,11 @@ def main() -> None:
 
         eval_model_name = st.selectbox(
             "Evaluation Model (local only for uncertainty metrics)",
-            ["meta-llama/Llama-3.2-3B-Instruct", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"],
+            [
+                "meta-llama/Llama-3.1-8B-Instruct",
+                "meta-llama/Llama-3.2-3B-Instruct",
+                "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+            ],
             index=0,
         )
         max_samples = st.slider("Number of samples", 1, 20, 5)
@@ -699,8 +707,12 @@ def main() -> None:
         st.caption("Evaluate code repair strategies on curated bug datasets.")
         repair_model_name = st.selectbox(
             "Repair Model (local Llama only)",
-            ["meta-llama/Llama-3.2-3B-Instruct", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"],
-            index=1,
+            [
+                "meta-llama/Llama-3.1-8B-Instruct",
+                "meta-llama/Llama-3.2-3B-Instruct",
+                "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+            ],
+            index=0,
         )
         repair_samples = st.slider("Number of samples", 1, 10, 3)
         repair_dataset = st.selectbox("Repair Dataset", ["repair", "defects4j", "gitbugs"])
