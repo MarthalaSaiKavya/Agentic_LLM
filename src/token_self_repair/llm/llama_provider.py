@@ -64,7 +64,12 @@ class LlamaProvider(LLMClient):
         
     def _load_tokenizer(self) -> AutoTokenizer:
         """Load and configure tokenizer."""
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        from huggingface_hub import HfFolder
+        token = HfFolder.get_token()
+        tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name,
+            token=token
+        )
         
         # Ensure pad token is set
         if tokenizer.pad_token is None:
@@ -82,7 +87,9 @@ class LlamaProvider(LLMClient):
     def _load_quantized_model(self) -> AutoModelForCausalLM:
         """Load model with 4-bit quantization."""
         from transformers import BitsAndBytesConfig
+        from huggingface_hub import HfFolder
         
+        token = HfFolder.get_token()
         quantization_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.float16,
@@ -93,7 +100,8 @@ class LlamaProvider(LLMClient):
             self.model_name,
             quantization_config=quantization_config,
             device_map="auto",
-            trust_remote_code=True
+            trust_remote_code=True,
+            token=token
         )
         
         model.eval()
@@ -101,18 +109,23 @@ class LlamaProvider(LLMClient):
     
     def _load_standard_model(self) -> AutoModelForCausalLM:
         """Load model without quantization."""
+        from huggingface_hub import HfFolder
+        token = HfFolder.get_token()
+        
         if self.device.type == 'cuda':
             model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 torch_dtype=self.torch_dtype,
                 device_map="auto",
-                trust_remote_code=True
+                trust_remote_code=True,
+                token=token
             )
         else:
             model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 torch_dtype=self.torch_dtype,
-                trust_remote_code=True
+                trust_remote_code=True,
+                token=token
             )
             model = model.to(self.device)
         
