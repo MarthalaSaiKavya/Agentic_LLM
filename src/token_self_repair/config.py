@@ -11,7 +11,9 @@ class Thresholds:
     high_confidence: float = 0.8
     moderate_confidence: float = 0.6
     low_confidence: float = 0.4
-    repair_activation_uncertainty: float = 0.45
+    # For smaller models (e.g., 8B) we want the repair loop to be a bit more
+    # sensitive, so trigger repairs once total uncertainty exceeds ~0.25.
+    repair_activation_uncertainty: float = 0.25
 
 
 # Constants for LangGraph agentic workflow

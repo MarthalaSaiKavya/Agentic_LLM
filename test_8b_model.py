@@ -1,4 +1,4 @@
-"""Simple test to verify Llama-3 8B model setup."""
+"""Simple test to verify Llama-3.1 8B model setup."""
 
 import os
 from huggingface_hub import login
@@ -9,8 +9,8 @@ token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
 if token:
     login(token=token, add_to_git_credential=False)
 
-print("Loading Llama-3 8B Instruct model...")
-print("(First time will download ~16GB, this may take a while)")
+print("Loading Llama-3.1 8B Instruct model...")
+print("(First time will download ~16GB; ensure adequate GPU/CPU and disk.)")
 
 # Try to load with quantization (saves memory)
 try:

@@ -9,6 +9,7 @@ from typing import Callable, List, Optional
 
 from .datasets import TaskSample, dataset_registry
 from .metrics import pass_at_k
+from .judge import judge_patch, JudgeResult
 from ..pipelines.program_repair import ProgramRepairCoordinator, ProgramRepairResult
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ class RepairSampleResult:
     success: bool
     latency_seconds: float
     repair_messages: List[str]
+    judge_explanation: str
 
 
 @dataclass(slots=True)
@@ -74,7 +76,23 @@ class ProgramRepairEvaluationRunner:
             )
             latency = time.perf_counter() - start
             latencies.append(latency)
-            success = self._compare_patch(result.patch, sample.reference)
+            # Use LLM-based judge when available; fall back to strict comparison.
+            judge: JudgeResult = judge_patch(
+                buggy_description=sample.description or sample.prompt,
+                prediction_patch=result.patch,
+                reference_patch=sample.reference,
+            )
+            if judge.correct is None:
+                success = self._compare_patch(result.patch, sample.reference)
+                explanation = (
+                    judge.explanation
+                    + " Fallback to normalized string comparison."
+                    if judge.explanation
+                    else "Fallback to normalized string comparison."
+                )
+            else:
+                success = bool(judge.correct)
+                explanation = judge.explanation
             success_flags.append(success)
             sample_results.append(
                 RepairSampleResult(
@@ -86,6 +104,7 @@ class ProgramRepairEvaluationRunner:
                     success=success,
                     latency_seconds=latency,
                     repair_messages=[message.title for message in result.repair_messages],
+                    judge_explanation=explanation,
                 )
             )
             logger.info(
