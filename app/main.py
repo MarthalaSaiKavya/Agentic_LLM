@@ -62,14 +62,21 @@ def _token_uncertainty_html(
     totals = np.asarray(u_map.scores.total, dtype=np.float32)
     if totals.size == 0:
         return None
-    if threshold is not None and threshold > 0:
-        scale = float(threshold)
-    else:
-        max_total = float(np.max(totals))
-        scale = max_total if max_total > 0 else 1.0
+    # For visualization, use a *relative* scale based on the distribution of
+    # uncertainties in this answer: tokens near the 10th percentile are green,
+    # tokens near the 90th percentile are red. This keeps contrast even when
+    # absolute values are small.
+    low = float(np.percentile(totals, 10))
+    high = float(np.percentile(totals, 90))
+    if high <= low:
+        low = float(np.min(totals))
+        high = float(np.max(totals)) if float(np.max(totals)) > 0 else low + 1.0
     spans = []
     for token, score in zip(u_map.tokens, totals):
-        ratio = float(np.clip(score / scale, 0.0, 1.0))
+        raw = 0.0
+        if high > low:
+            raw = (float(score) - low) / (high - low)
+        ratio = float(np.clip(raw, 0.0, 1.0))
         # Interpolate between green (#22c55e) and red (#dc2626)
         start = (0x22, 0xC5, 0x5E)
         end = (0xDC, 0x26, 0x26)
@@ -79,7 +86,7 @@ def _token_uncertainty_html(
         color = f"#{r:02x}{g:02x}{b:02x}"
         safe_token = html.escape(token)
         spans.append(
-            f'<span style="background-color:{color}; padding:0 2px; border-radius:3px;">{safe_token}</span>'
+            f'<span style="color:{color}; padding:0 1px;">{safe_token}</span>'
         )
     joined = "".join(spans)
     return f'<div style="white-space: pre-wrap; line-height:1.5; font-family: inherit;">{joined}</div>'
@@ -136,6 +143,38 @@ def render_token_map(u_map: Optional["UncertaintyMap"]) -> None:
             }
         )
     df = pd.DataFrame(rows)
+    if df.empty:
+        st.info("No token-level uncertainty data to display.")
+        return
+
+    # Scatter plot: token index vs total uncertainty
+    scatter = (
+        alt.Chart(df)
+        .mark_circle(size=40, opacity=0.8)
+        .encode(
+            x=alt.X("index:Q", title="Token index"),
+            y=alt.Y("total:Q", title="Total uncertainty"),
+            # Use a built-in sequential scheme that goes from yellow to red.
+            color=alt.Color("total:Q", scale=alt.Scale(scheme="yelloworangered")),
+            tooltip=["index", "token", "total", "aleatoric", "epistemic"],
+        )
+        .properties(height=220)
+    )
+    st.altair_chart(scatter, width="stretch")
+
+    # Histogram of total uncertainty distribution
+    hist = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X("total:Q", bin=alt.Bin(maxbins=25), title="Total uncertainty"),
+            y=alt.Y("count():Q", title="Token count"),
+        )
+        .properties(height=160)
+    )
+    st.altair_chart(hist, width="stretch")
+
+    # Table of top-K most uncertain tokens with AU/EU breakdown
     df_sorted = df.sort_values("total", ascending=False).head(25)
     st.dataframe(df_sorted, width="stretch")
 
@@ -495,7 +534,7 @@ def main() -> None:
             [
                 "meta-llama/Llama-3.1-8B-Instruct",
                 "meta-llama/Llama-3.2-3B-Instruct",
-                "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+                "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
             ],
             index=0,
         )
@@ -521,7 +560,7 @@ def main() -> None:
             logger.info("Manual note added to knowledge base as %s.", doc_id)
 
     with tab_chat:
-        st.title("Uncertainty-Aware RAG Assistant")
+        st.title("Uncertainty-Aware AI Assistant")
         st.caption("Ask questions, inspect uncertainties, and trigger repair flows.")
 
         for entry in st.session_state.chat_history:
@@ -591,7 +630,7 @@ def main() -> None:
             [
                 "meta-llama/Llama-3.1-8B-Instruct",
                 "meta-llama/Llama-3.2-3B-Instruct",
-                "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+                "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
             ],
             index=0,
         )
@@ -710,7 +749,7 @@ def main() -> None:
             [
                 "meta-llama/Llama-3.1-8B-Instruct",
                 "meta-llama/Llama-3.2-3B-Instruct",
-                "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+                "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
             ],
             index=0,
         )
@@ -747,12 +786,13 @@ def main() -> None:
                         "reference_patch": sample.reference_patch,
                         "success": sample.success,
                         "latency_seconds": sample.latency_seconds,
+                        "judge_explanation": sample.judge_explanation,
                     }
                 )
             if sample_rows:
                 st.dataframe(sample_rows, width="stretch")
             st.info(
-                "Repair logs are available in the terminal output for detailed troubleshooting of each attempt."
+                "Repair logs and LLM judge explanations are available in the table and terminal output for each attempt."
             )
 
 if __name__ == "__main__":

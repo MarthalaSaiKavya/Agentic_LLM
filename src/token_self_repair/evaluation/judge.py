@@ -93,3 +93,77 @@ def judge_answer(
     return _heuristic_judge(question, prediction, reference)
 
 
+def _heuristic_patch_judge(prediction: str, reference: str) -> JudgeResult:
+    """Fallback judge for program repair: normalized string equality."""
+    if not reference:
+        return JudgeResult(correct=None, explanation="No reference patch supplied.")
+    pred_norm = _normalize_text(prediction)
+    ref_norm = _normalize_text(reference)
+    if not pred_norm:
+        return JudgeResult(correct=False, explanation="Predicted patch is empty.")
+    if pred_norm == ref_norm:
+        return JudgeResult(correct=True, explanation="Predicted patch matches reference after normalization.")
+    return JudgeResult(
+        correct=False,
+        explanation="Predicted patch does not textually match the reference; functional correctness not checked.",
+    )
+
+
+def judge_patch(
+    buggy_description: str,
+    prediction_patch: str,
+    reference_patch: str,
+    *,
+    model: str = "gpt-4o-mini",
+) -> JudgeResult:
+    """Judge whether a predicted patch is functionally equivalent to the reference.
+
+    Uses an LLM grader when OPENAI_API_KEY and openai are available, and falls
+    back to a simple normalized string comparison otherwise.
+    """
+    if not reference_patch:
+        return JudgeResult(correct=None, explanation="No reference patch supplied.")
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return _heuristic_patch_judge(prediction_patch, reference_patch)
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return _heuristic_patch_judge(prediction_patch, reference_patch)
+
+    client = OpenAI()
+    prompt = (
+        "You are a strict code repair evaluator. Compare the PREDICTED_PATCH to the "
+        "REFERENCE_PATCH and decide if they are functionally equivalent and satisfy "
+        "the bug description.\n\n"
+        "Respond ONLY with a JSON object of the form "
+        '{"correct": true/false, "explanation": "..."}.\n\n'
+        f"BUG_DESCRIPTION:\n{buggy_description}\n\n"
+        f"REFERENCE_PATCH:\n{reference_patch}\n\n"
+        f"PREDICTED_PATCH:\n{prediction_patch}\n"
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are an expert software testing and repair judge."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=300,
+        )
+        content = response.choices[0].message.content or ""
+        data = json.loads(content)
+        correct = data.get("correct")
+        explanation = data.get("explanation", "")
+        if isinstance(correct, bool):
+            return JudgeResult(correct=correct, explanation=explanation)
+    except Exception as exc:
+        return JudgeResult(correct=None, explanation=f"LLM patch judge failed: {exc}")
+
+    return _heuristic_patch_judge(prediction_patch, reference_patch)
+
+

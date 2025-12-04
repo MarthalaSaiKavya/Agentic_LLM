@@ -331,9 +331,11 @@ class LogTokUEstimator(UncertaintyEstimator):
             return []
 
         def classify(total: float) -> UncertaintyLevel:
-            if total < 0.2:
+            # Make classification more sensitive so small models (e.g., 8B)
+            # still show a meaningful spread of HIGH/MODERATE/LOW.
+            if total < 0.05:
                 return UncertaintyLevel.HIGH_CONFIDENCE
-            if total < 0.5:
+            if total < 0.20:
                 return UncertaintyLevel.MODERATE
             return UncertaintyLevel.LOW
 

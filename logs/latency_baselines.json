@@ -1,5 +1,6 @@
 {
   "TruthfulQA-mini": 37.54728140211082,
-  "BioASQ-mini": 22.018358062021434,
-  "HumanEval-lite": 57.22213487501722
+  "BioASQ-mini": 24.70079598594457,
+  "HumanEval-lite": 57.22213487501722,
+  "GSM8K-lite": 37.0675567034632
 }
